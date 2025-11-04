@@ -33,8 +33,9 @@ public class App {
         DijkstraRouter router = new DijkstraRouter(graph.adjacency, graph.nodeIdToNode);
 
         // setting up SparkJava HTTP server
-        port(Integer.parseInt(Optional.ofNullable(System.getenv("PORT")).orElse("4567")));
-        staticFiles.location("resources/public");
+    port(Integer.parseInt(Optional.ofNullable(System.getenv("PORT")).orElse("4567")));
+    // serve static files from classpath '/public' (maps to src/main/resources/public)
+    staticFiles.location("/public");
 
         get("/health", (req, res) -> {
             res.type("application/json");

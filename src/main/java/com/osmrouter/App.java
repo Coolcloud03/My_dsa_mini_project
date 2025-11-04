@@ -12,7 +12,16 @@ public class App {
     public static void main(String[] args) {
 
         // asking for the OSM file path via env var or system property
-        String osmPath = "C:/Users/shrijay/Downloads/map.osm";
+        String osmPath = System.getProperty("osm.file", System.getenv("OSM_FILE"));
+        if (osmPath == null || osmPath.isEmpty()) {
+            // Try to find pune.osm in the project root
+            File projectRoot = new File("pune.osm");
+            if (projectRoot.exists()) {
+                osmPath = projectRoot.getAbsolutePath();
+            } else {
+                osmPath = "pune.osm"; // fallback
+            }
+        }
 
         File f = new File(osmPath);
         if (!f.exists()) {
@@ -33,9 +42,9 @@ public class App {
         DijkstraRouter router = new DijkstraRouter(graph.adjacency, graph.nodeIdToNode);
 
         // setting up SparkJava HTTP server
-    port(Integer.parseInt(Optional.ofNullable(System.getenv("PORT")).orElse("4567")));
-    // serve static files from classpath '/public' (maps to src/main/resources/public)
-    staticFiles.location("/public");
+        port(Integer.parseInt(Optional.ofNullable(System.getenv("PORT")).orElse("4568")));
+        staticFiles.location("/public");
+        staticFiles.expireTime(600);
 
         get("/health", (req, res) -> {
             res.type("application/json");

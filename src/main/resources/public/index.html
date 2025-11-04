@@ -23,71 +23,202 @@
       if (!r.ok) throw new Error('route failed');
       return r.json();
     }
-    window.addEventListener('DOMContentLoaded', () => {
-      const map = L.map('map').setView([0, 0], 2);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
-      let startMarker = null, endMarker = null, line = null;
-      let startNodeId = null, endNodeId = null;
 
-      const setStatus = (msg) => document.getElementById('status').textContent = msg || '';
+    // small haversine helper in JS for distance estimates (meters)
+    function haversineMeters(lat1, lon1, lat2, lon2) {
+      const toRad = v => v * Math.PI / 180;
+      const R = 6371000;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)*Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const map = L.map('map').setView([18.5204, 73.8567], 13);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+      // UI / state
+      let mode = null; // 'addDriver' | 'setCustomer' | 'setDestination' | null
+      let drivers = []; // { id, marker, nodeId }
+      let driverSeq = 1;
+      let customer = null; // { marker, nodeId }
+      let destination = null; // { marker, nodeId }
+      let routeLine = null;
+      let selectedDriverId = null;
+
+      const statusEl = document.getElementById('status');
+      const setStatus = (m) => statusEl.textContent = m || '';
+
+      // create colored div icon
+      function coloredIcon(color) {
+        return L.divIcon({
+          className: '',
+          html: `<div style="width:16px;height:16px;border-radius:8px;background:${color};border:2px solid white"></div>`,
+          iconSize: [18,18],
+          iconAnchor: [9,9]
+        });
+      }
+
+      function addDriverAt(lat, lon) {
+        const marker = L.marker([lat, lon], { icon: coloredIcon('#2ecc71') }).addTo(map).bindPopup('Driver');
+        const id = driverSeq++;
+        drivers.push({ id, marker, nodeId: null });
+        updateDriverList();
+      }
+
+      function updateDriverList() {
+        const sel = document.getElementById('drivers');
+        sel.innerHTML = '';
+        drivers.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.text = `Driver ${d.id}`;
+          if (d.id === selectedDriverId) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
 
       map.on('click', async (e) => {
         try {
-          setStatus('Selecting nearest nodes...');
-          if (!startMarker) {
-            const n = await nearest(e.latlng.lat, e.latlng.lng);
-            startNodeId = n.id;
-            startMarker = L.marker([n.lat, n.lon], { draggable: true }).addTo(map).bindPopup('Start').openPopup();
-            startMarker.on('dragend', async () => {
-              const ll = startMarker.getLatLng();
-              const n2 = await nearest(ll.lat, ll.lng);
-              startNodeId = n2.id;
-              await drawRoute();
-            });
-            setStatus('Start set. Click to select end.');
-          } else if (!endMarker) {
-            const n = await nearest(e.latlng.lat, e.latlng.lng);
-            endNodeId = n.id;
-            endMarker = L.marker([n.lat, n.lon], { draggable: true }).addTo(map).bindPopup('End').openPopup();
-            endMarker.on('dragend', async () => {
-              const ll = endMarker.getLatLng();
-              const n2 = await nearest(ll.lat, ll.lng);
-              endNodeId = n2.id;
-              await drawRoute();
-            });
-            await drawRoute();
-          } else {
-            // reset
-            map.removeLayer(startMarker); map.removeLayer(endMarker);
-            if (line) map.removeLayer(line);
-            startMarker = endMarker = line = null;
-            startNodeId = endNodeId = null;
-            setStatus('Reset. Click to select start.');
+          if (!mode) return;
+          setStatus('Finding nearest graph node...');
+          const n = await nearest(e.latlng.lat, e.latlng.lng);
+          if (mode === 'addDriver') {
+            // place driver marker at the snapped node location
+            const lat = n.lat, lon = n.lon;
+            const marker = L.marker([lat, lon], { icon: coloredIcon('#2ecc71') }).addTo(map).bindPopup('Driver').openPopup();
+            const id = driverSeq++;
+            drivers.push({ id, marker, nodeId: n.id });
+            updateDriverList();
+            setStatus(`Driver ${id} added (node ${n.id})`);
+          } else if (mode === 'setCustomer') {
+            if (customer && customer.marker) map.removeLayer(customer.marker);
+            customer = { nodeId: n.id, marker: L.marker([n.lat, n.lon], { icon: coloredIcon('#f39c12') }).addTo(map).bindPopup('Customer').openPopup() };
+            setStatus(`Customer set (node ${n.id})`);
+          } else if (mode === 'setDestination') {
+            if (destination && destination.marker) map.removeLayer(destination.marker);
+            destination = { nodeId: n.id, marker: L.marker([n.lat, n.lon], { icon: coloredIcon('#e74c3c') }).addTo(map).bindPopup('Destination').openPopup() };
+            setStatus(`Destination set (node ${n.id})`);
           }
+          // clear mode after placing
+          mode = null;
+          document.getElementById('mode').textContent = '';
         } catch (err) {
           console.error(err);
           setStatus('Error: ' + err.message);
         }
       });
 
-      async function drawRoute() {
-        if (!startNodeId || !endNodeId) return;
-        setStatus('Routing...');
-        const r = await route(startNodeId, endNodeId);
-        const latlngs = r.coordinates.map(c => [c[0], c[1]]);
-        if (line) map.removeLayer(line);
-        line = L.polyline(latlngs, { color: 'blue', weight: 4 }).addTo(map);
-        map.fitBounds(line.getBounds(), { padding: [20, 20] });
-        setStatus(`Route length: ${r.count} points`);
-      }
+      // wire up buttons
+      document.getElementById('addDriverBtn').addEventListener('click', () => { mode = 'addDriver'; document.getElementById('mode').textContent = 'Click map to add driver'; setStatus('Click map to add driver'); });
+      document.getElementById('setCustomerBtn').addEventListener('click', () => { mode = 'setCustomer'; document.getElementById('mode').textContent = 'Click map to set customer'; setStatus('Click map to set customer'); });
+      document.getElementById('setDestinationBtn').addEventListener('click', () => { mode = 'setDestination'; document.getElementById('mode').textContent = 'Click map to set destination'; setStatus('Click map to set destination'); });
+
+      document.getElementById('assignBtn').addEventListener('click', async () => {
+        if (!customer) { setStatus('Set a customer first'); return; }
+        if (drivers.length === 0) { setStatus('Add at least one driver'); return; }
+        setStatus('Assigning nearest driver (by route distance)...');
+        let best = Number.POSITIVE_INFINITY, bestId = null;
+        for (const d of drivers) {
+          try {
+            // ensure d has nodeId
+            if (!d.nodeId) {
+              const ll = d.marker.getLatLng();
+              const n = await nearest(ll.lat, ll.lng);
+              d.nodeId = n.id;
+            }
+            const r = await route(d.nodeId, customer.nodeId);
+            // estimate length by summing haversine between coordinates
+            let len = 0;
+            for (let i = 1; i < r.coordinates.length; i++) {
+              const a = r.coordinates[i-1], b = r.coordinates[i];
+              len += haversineMeters(a[0], a[1], b[0], b[1]);
+            }
+            if (len < best) { best = len; bestId = d.id; }
+          } catch (e) { console.warn('route failed for driver', d.id, e); }
+        }
+        if (bestId == null) { setStatus('Could not assign any driver'); return; }
+        selectedDriverId = bestId;
+        updateDriverList();
+        setStatus(`Assigned Driver ${bestId} (approx ${Math.round(best)} meters away)`);
+      });
+
+      document.getElementById('simulateBtn').addEventListener('click', async () => {
+        if (!customer || !destination) { setStatus('Set customer and destination first'); return; }
+        if (!selectedDriverId) { setStatus('Assign a driver first'); return; }
+        const driver = drivers.find(d => d.id === Number(selectedDriverId));
+        if (!driver) { setStatus('Selected driver not found'); return; }
+        try {
+          setStatus('Calculating routes...');
+          // ensure nodeIds
+          if (!driver.nodeId) {
+            const ll = driver.marker.getLatLng();
+            const n = await nearest(ll.lat, ll.lng);
+            driver.nodeId = n.id;
+          }
+          // driver -> customer
+          const r1 = await route(driver.nodeId, customer.nodeId);
+          // customer -> destination
+          const r2 = await route(customer.nodeId, destination.nodeId);
+
+          const coords = r1.coordinates.concat(r2.coordinates);
+          if (routeLine) map.removeLayer(routeLine);
+          routeLine = L.polyline(coords.map(c => [c[0], c[1]]), { color: 'blue', weight: 4 }).addTo(map);
+          map.fitBounds(routeLine.getBounds(), { padding: [20, 20] });
+
+          // animate driver marker along coords
+          setStatus('Simulating ride...');
+          let idx = 0;
+          const stepMs = 200; // ms per point
+          // ensure driver's marker uses a special icon
+          driver.marker.setIcon(coloredIcon('#3498db'));
+          const anim = setInterval(() => {
+            if (idx >= coords.length) { clearInterval(anim); setStatus('Simulation complete'); return; }
+            const p = coords[idx];
+            driver.marker.setLatLng([p[0], p[1]]);
+            // if reached customer (first segment end)
+            if (idx === r1.coordinates.length - 1) {
+              driver.marker.bindPopup('Picked up customer').openPopup();
+            }
+            idx++;
+          }, stepMs);
+
+        } catch (err) {
+          console.error(err);
+          setStatus('Simulation error: ' + err.message);
+        }
+      });
+
+      // select change
+      document.getElementById('drivers').addEventListener('change', (e) => {
+        selectedDriverId = Number(e.target.value);
+        updateDriverList();
+      });
+
     });
   </script>
 </head>
 <body>
   <div class="panel">
-    <div><strong>OSM Shortest Path</strong></div>
-    <div class="hint">Click map to pick start and end. Click again to reset.</div>
-    <div id="status" class="hint"></div>
+    <div style="margin-bottom:8px"><strong>OSM Shortest Path — Uber Simulator</strong></div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <button id="addDriverBtn">Add Driver</button>
+      <button id="setCustomerBtn">Set Customer</button>
+      <button id="setDestinationBtn">Set Destination</button>
+    </div>
+    <div style="margin-bottom:6px">
+      <label for="drivers">Drivers:</label>
+      <select id="drivers" style="min-width:160px"></select>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <button id="assignBtn">Assign Nearest Driver</button>
+      <button id="simulateBtn">Simulate Ride</button>
+    </div>
+    <div class="hint" id="mode" style="margin-bottom:6px"></div>
+    <div class="hint">Usage: click "Add Driver" then click map to place drivers. Click "Set Customer" and "Set Destination" and then assign & simulate.</div>
+    <div id="status" class="hint" style="margin-top:6px"></div>
   </div>
   <div id="map"></div>
 </body>
